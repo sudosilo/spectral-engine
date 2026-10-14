@@ -1,5 +1,5 @@
 /* spectral-engine-v2-sync.js
-   ORANGE PHONE: copied from stompbox-lab-v3-sync.js so every app speaks to the same server.
+   BLUE PHONE: copied from stompbox-lab-v3-sync.js so every app speaks to the same server.
    Board sync client. Shared by every app that syncs a board between phones.
    The app supplies exportState, loadState and applyChange. This file owns the
    device id, the room code, the socket and the message format.
@@ -19,9 +19,9 @@
      state   snapshot only, the whole board from exportState
    A "request" asks this phone to answer with a snapshot of its board.
 
-   ORANGE PHONE: v2 adds on() and send() so other modules share this one socket.
+   BLUE PHONE: v2 adds on() and send() so other modules share this one socket.
    The clock uses "ping" and "pong". The loop uses "transport" and "loop".
-   ORANGE PHONE: v3 adds ready() and onOpen() for login. While ready() is false the socket
+   BLUE PHONE: v3 adds ready() and onOpen() for login. While ready() is false the socket
    stays closed and the status reads "sign in". onOpen() runs first on every new socket,
    which is where the app sends its login token. The heartbeat uses "beat". */
 (function(){

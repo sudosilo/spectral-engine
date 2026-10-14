@@ -1,5 +1,5 @@
 /* spectral-engine-v2-band.js
-   ORANGE PHONE: v2 band source for the visualizers.
+   BLUE PHONE: v2 band source for the visualizers.
 
    The visualizer joins a room on the shared sync server with a room code, the same as the instruments.
    It does not listen to any audio. It reads the room's clock, tempo and the patterns each instrument slot

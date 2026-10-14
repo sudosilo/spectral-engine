@@ -1,9 +1,9 @@
 /* spectral-engine-v2-loop.js
-   ORANGE PHONE: copied from stompbox-lab-v2-loop.js for its pattern reader and bar timeline. The visualizer uses window.StompboxPattern only.
+   BLUE PHONE: copied from stompbox-lab-v2-loop.js for its pattern reader and bar timeline. The visualizer uses window.StompboxPattern only.
    Loop engine for phones. Parses patterns, counts bars from the server clock, and
    schedules notes with Web Audio. The server only sends data, never code.
 
-   ORANGE PHONE: stage two, pattern parser, bar timeline, scheduler, slot voices.
+   BLUE PHONE: stage two, pattern parser, bar timeline, scheduler, slot voices.
 
    Pattern notation, one bar per cycle:
      bd sd hh        steps share the bar evenly

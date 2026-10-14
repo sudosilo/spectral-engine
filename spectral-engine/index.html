@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Spectral Engine · 12 Visualizers</title>
-<!-- ORANGE PHONE: v2 band source. With a room code the visualizers follow the instruments in that room over the
+<!-- BLUE PHONE: v2 band source. With a room code the visualizers follow the instruments in that room over the
      network, from the shared server clock and the patterns each slot plays, with no microphone and no sound. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@100;200;400;700&display=swap');
@@ -715,7 +715,7 @@ function drawParticles() {
       ctx.lineWidth=p.size*0.5; ctx.stroke();
     }
     // Dot
-    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0,p.size*p.life),0,Math.PI*2); // ORANGE PHONE: v2 a fading particle could reach a negative radius and throw
+    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0,p.size*p.life),0,Math.PI*2); // BLUE PHONE: v2 a fading particle could reach a negative radius and throw
     ctx.fillStyle=`hsla(${p.hue},${p.sat}%,${p.lit}%,${p.life})`;
     ctx.fill();
   });

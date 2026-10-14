@@ -1,8 +1,8 @@
 /* spectral-engine-v2-clock.js
-   ORANGE PHONE: copied from stompbox-lab-v2-clock.js so every app counts time the same way.
+   BLUE PHONE: copied from stompbox-lab-v2-clock.js so every app counts time the same way.
    Server clock for phones. Shared by every app that plays in time with other phones.
 
-   ORANGE PHONE: stage one, clock sync.
+   BLUE PHONE: stage one, clock sync.
 
    The phone pings the server in a short burst and notes the round trip of each ping.
    The offset from the fastest round trip is the one that gets used, because it carries
