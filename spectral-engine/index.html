@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Spectral Engine · 12 Visualizers</title>
+<title>Spectral Engine · 13 Visualizers</title>
 <!-- BLUE PHONE: v2 band source. With a room code the visualizers follow the instruments in that room over the
      network, from the shared server clock and the patterns each slot plays, with no microphone and no sound. -->
 <style>
@@ -138,13 +138,33 @@ canvas#viz { display:block; width:100%; height:420px; }
 }
 
 @media(max-width:600px){ canvas#viz{ height:300px; } }
+
+/* Mic button and chromatogram tools. The tools float over the canvas so no button ever moves. */
+.mic-btn { background:#1a4fd6; }
+.mic-btn:hover { background:#3a6ae6; }
+.mic-btn.live { background:#d61a1a; }
+.chr-tools {
+  position:absolute; top:8px; left:8px; display:none; gap:4px; align-items:center; flex-wrap:wrap;
+  max-width:calc(100% - 150px);
+}
+.chr-tools.show { display:flex; }
+.chr-btn {
+  background:rgba(255,255,255,0.92); border:1px solid #1a4fd6; color:#1a4fd6;
+  font-family:'Share Tech Mono', monospace; font-size:0.56rem; padding:4px 8px; cursor:pointer;
+  letter-spacing:0.1em;
+}
+.chr-btn.active { background:#1a4fd6; color:#fff; }
+.chr-key {
+  font-family:'Share Tech Mono', monospace; font-size:0.6rem; letter-spacing:0.12em;
+  color:#1a4fd6; background:rgba(255,255,255,0.92); padding:4px 8px; border:1px solid #b0c8f0;
+}
 </style>
 </head>
 <body>
 
 <header>
   <h1>Spectral Engine</h1>
-  <div class="sub">12 visualizers · 31-edo aware · web audio api · band sync v2</div>
+  <div class="sub">13 visualizers · 31-edo aware · web audio api · band sync v2 · mic</div>
 </header>
 
 <div class="main">
@@ -157,6 +177,7 @@ canvas#viz { display:block; width:100%; height:420px; }
 
   <div class="transport">
     <button class="play-btn" id="playBtn" disabled onclick="togglePlay()">▶ PLAY</button>
+    <button class="play-btn mic-btn" id="micBtn" onclick="toggleMic()">MIC</button>
     <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
     <div class="vol-wrap">
       VOL <input type="range" id="volSlider" min="0" max="1" step="0.01" value="1" oninput="setVolume(this.value)">
@@ -171,6 +192,13 @@ canvas#viz { display:block; width:100%; height:420px; }
 
   <div class="canvas-wrap">
     <canvas id="viz"></canvas>
+    <div class="chr-tools" id="chrTools">
+      <button class="chr-btn" id="chrScrollBtn" onclick="chrToggleScroll()">STILL</button>
+      <button class="chr-btn active" data-sym="notes" onclick="chrSetSymbols('notes')">NOTES</button>
+      <button class="chr-btn" data-sym="dna" onclick="chrSetSymbols('dna')">DNA</button>
+      <button class="chr-btn" data-sym="ascii" onclick="chrSetSymbols('ascii')">ASCII</button>
+      <span class="chr-key" id="chrKey">KEY LISTENING</span>
+    </div>
     <div class="mode-label" id="modeLabel">SPECTRUM</div>
   </div>
 
@@ -250,6 +278,7 @@ const MODES = [
   { id:'ribbon',      label:'10 · Ribbon'        },
   { id:'constellation',label:'11 · Constellation'},
   { id:'pendulum',    label:'12 · Pendulum'      },
+  { id:'chromatogram',label:'13 · Chromatogram'  },
 ];
 let mode = 'spectrum';
 
@@ -263,6 +292,7 @@ MODES.forEach((m, i) => {
     document.getElementById('modeLabel').textContent = m.label.toUpperCase();
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    document.getElementById('chrTools').classList.toggle('show', m.id === 'chromatogram');
     resetModeState();
   };
   btnWrap.appendChild(btn);
@@ -277,6 +307,9 @@ function resetModeState() {
   ribbonPoints = [];
   constellationNodes = [];
   gridHistory = [];
+  window.pendulumTrail = [];
+  chrStrip = [];
+  chrHist = [];
   if (trailCtx) trailCtx.clearRect(0, 0, W, H);
 }
 
@@ -305,7 +338,65 @@ let bufferSource = null;    // Currently playing BufferSource
 let playStartCtxTime = 0;   // audioCtx.currentTime when play began
 let playStartOffset = 0;    // offset into track when play began
 
+function ensureAnalyser() {
+  if (analyser && analyser.connect) return;
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.82;
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = parseFloat(document.getElementById('volSlider').value);
+  analyser.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+}
+
+// MIC: the microphone feeds the analyser for every visualizer. The speakers are muted while it is live so it never feeds back.
+let micOn = false, micStream = null, micSource = null, micSavedOffset = 0;
+async function toggleMic() {
+  const btn = document.getElementById('micBtn');
+  if (micOn) { stopMic(); return; }
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (e) {
+    btn.textContent = 'MIC BLOCKED';
+    setTimeout(() => { if (!micOn) btn.textContent = 'MIC'; }, 2500);
+    return;
+  }
+  if (isPlaying) { micSavedOffset = currentT(); stopSource(); }
+  else micSavedOffset = playStartOffset;
+  ensureAnalyser();
+  bufLen = analyser.frequencyBinCount;
+  freqData = new Uint8Array(bufLen);
+  timeData = new Uint8Array(bufLen);
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  micSource.connect(analyser);
+  gainNode.gain.value = 0;
+  micOn = true;
+  isPlaying = true;
+  playStartOffset = 0;
+  playStartCtxTime = audioCtx.currentTime;
+  bpmEst = 0; beatHistory = []; lastBeat = 0;
+  btn.textContent = 'MIC LIVE';
+  btn.classList.add('live');
+  document.getElementById('playBtn').textContent = '▶ PLAY';
+  if (animId) cancelAnimationFrame(animId);
+  loop();
+}
+function stopMic() {
+  if (micSource) { try { micSource.disconnect(); } catch (e) {} micSource = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (gainNode) gainNode.gain.value = parseFloat(document.getElementById('volSlider').value);
+  micOn = false;
+  isPlaying = false;
+  playStartOffset = micSavedOffset;
+  const btn = document.getElementById('micBtn');
+  btn.textContent = 'MIC';
+  btn.classList.remove('live');
+}
+
 function loadFile(file) {
+  if (micOn) stopMic();
   const label = document.getElementById('fileName');
   label.textContent = '⏳ Decoding ' + file.name + '...';
   document.getElementById('playBtn').disabled = true;
@@ -329,16 +420,7 @@ function loadFile(file) {
         duration = buf.duration;
         bpmEst = 0; beatHistory = [];
 
-        // Build analyser once
-        if (!analyser) {
-          analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 2048;
-          analyser.smoothingTimeConstant = 0.82;
-          gainNode = audioCtx.createGain();
-          gainNode.gain.value = parseFloat(document.getElementById('volSlider').value);
-          analyser.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-        }
+        ensureAnalyser();
 
         bufLen = analyser.frequencyBinCount;
         freqData = new Uint8Array(bufLen);
@@ -386,6 +468,7 @@ function startSource(offset) {
 }
 
 function togglePlay() {
+  if (micOn) stopMic();
   if (!decodedBuffer) return;
   audioCtx.resume().then(() => {
     if (isPlaying) {
@@ -413,12 +496,17 @@ function seekTo(e) {
   updateTime(offset);
 }
 
-function setVolume(v) { if (gainNode) gainNode.gain.value = parseFloat(v); }
+function setVolume(v) { if (gainNode && !micOn) gainNode.gain.value = parseFloat(v); }
 function currentT() {
   if (!audioCtx || !isPlaying) return playStartOffset;
   return playStartOffset + (audioCtx.currentTime - playStartCtxTime);
 }
 function updateTime(t) {
+  if (micOn) {
+    document.getElementById('timeDisplay').textContent = 'MIC LIVE';
+    document.getElementById('progressFill').style.width = '0%';
+    return;
+  }
   const f = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
   document.getElementById('timeDisplay').textContent = `${f(Math.max(0,t))} / ${f(duration||0)}`;
   document.getElementById('progressFill').style.width = duration ? `${Math.min(100,(t/duration)*100)}%` : '0%';
@@ -481,7 +569,7 @@ function loop() {
     spectrum, waveform, mandala, edo,
     particles: drawParticles, lissajous,
     hexgrid, spiral, branches, ribbon,
-    constellation, pendulum
+    constellation, pendulum, chromatogram
   }[mode];
   if(draw) draw();
 }
@@ -1027,7 +1115,7 @@ function pendulum() {
   }
   const tip=joints[joints.length-1];
   // Record tip trail
-  if(!pendulumTrail) window.pendulumTrail=[];
+  if(!window.pendulumTrail) window.pendulumTrail=[];
   window.pendulumTrail.push({x:tip.x,y:tip.y,hue:120+bands[0]*180,e:rms});
   if(window.pendulumTrail.length>600) window.pendulumTrail.shift();
   // Draw trail
@@ -1062,6 +1150,244 @@ function pendulum() {
   // Tip dot
   ctx.beginPath(); ctx.arc(tip.x,tip.y,4+rms*8,0,Math.PI*2);
   ctx.strokeStyle='#22c55e'; ctx.lineWidth=1.5; ctx.stroke();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 13 · CHROMATOGRAM: colored traces over a black baseline with a symbol row, like a sequencer printout.
+// Lines lie flat in silence and only move when sound arrives.
+// STILL draws the live waveform in every row, each row a little older than the one above.
+// SCROLL draws four band traces as a strip chart that reads like lines of a printout, newest at the right of the top row.
+// NOTES shows the twelve notes and the detected key, DNA shows which band is loudest, ASCII draws the wave in dashes and slashes.
+// ════════════════════════════════════════════════════════════════════
+const CHR_BANDS = [
+  { base:'A', lo:40,   hi:250,   col:'#1a8a3a', w:0.7 },
+  { base:'C', lo:250,  hi:1000,  col:'#1a4fd6', w:1.0 },
+  { base:'G', lo:1000, hi:4000,  col:'#111111', w:1.4 },
+  { base:'T', lo:4000, hi:12000, col:'#d61a1a', w:2.0 }
+];
+const CHR_NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const KS_MAJ = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+const KS_MIN = [6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+const CHR_COL = 3, CHR_GROUP = 8;
+let chrScroll = false, chrSymbols = 'notes';
+let chrStrip = [], chrHist = [], chrCount = 0;
+let chrKeyChroma = new Array(12).fill(0), chrKey = null;
+
+function chrToggleScroll() {
+  chrScroll = !chrScroll;
+  const b = document.getElementById('chrScrollBtn');
+  b.textContent = chrScroll ? 'SCROLL' : 'STILL';
+  b.classList.toggle('active', chrScroll);
+}
+function chrSetSymbols(s) {
+  chrSymbols = s;
+  document.querySelectorAll('.chr-btn[data-sym]').forEach(b => b.classList.toggle('active', b.dataset.sym === s));
+}
+
+function chrSampleRate() { return analyser && analyser.context ? analyser.context.sampleRate : 44100; }
+function chrBin(hz) { return Math.max(1, Math.min(bufLen - 1, Math.round(hz * 2 * bufLen / chrSampleRate()))); }
+
+function chrFindKey() {
+  const x = chrKeyChroma;
+  const xm = x.reduce((a, b) => a + b, 0) / 12;
+  if (xm < 0.02) return null;
+  let best = null;
+  [[KS_MAJ, 'major'], [KS_MIN, 'minor']].forEach(([p, q]) => {
+    const pm = p.reduce((a, b) => a + b, 0) / 12;
+    for (let r = 0; r < 12; r++) {
+      let n = 0, dx = 0, dp = 0;
+      for (let i = 0; i < 12; i++) {
+        const a = x[(i + r) % 12] - xm, b = p[i] - pm;
+        n += a * b; dx += a * a; dp += b * b;
+      }
+      const c = n / Math.sqrt((dx * dp) || 1);
+      if (!best || c > best.c) best = { c, tonic: r, q };
+    }
+  });
+  return best;
+}
+function chrScale(k) {
+  if (!k) return null;
+  const steps = k.q === 'major' ? [0,2,4,5,7,9,11] : [0,2,3,5,7,8,10];
+  return steps.map(s => (k.tonic + s) % 12);
+}
+
+function chrSample() {
+  const hzPerBin = chrSampleRate() / (2 * bufLen);
+  const e = CHR_BANDS.map(b => {
+    const s0 = chrBin(b.lo), s1 = Math.max(s0 + 1, chrBin(b.hi));
+    let sum = 0;
+    for (let i = s0; i < s1; i++) sum += freqData[i];
+    return Math.min(1, b.w * Math.max(0, sum / (s1 - s0) / 255 - 0.05) / 0.95);
+  });
+  const chroma = new Array(12).fill(0);
+  for (let i = 2; i < bufLen; i++) {
+    const f = i * hzPerBin;
+    if (f < 60) continue;
+    if (f > 5000) break;
+    const v = freqData[i];
+    if (v < 40) continue;
+    const pc = (((Math.round(12 * Math.log2(f / 440)) + 9) % 12) + 12) % 12;
+    chroma[pc] += v * v;
+  }
+  const cmax = Math.max(...chroma);
+  const loud = rms > 0.01 && cmax > 0;
+  let pc = -1;
+  if (loud) {
+    pc = 0;
+    for (let i = 1; i < 12; i++) if (chroma[i] > chroma[pc]) pc = i;
+    for (let i = 0; i < 12; i++) chrKeyChroma[i] = chrKeyChroma[i] * 0.985 + (chroma[i] / cmax) * 0.015;
+    chrKey = chrFindKey();
+  }
+  let dom = 0;
+  for (let i = 1; i < 4; i++) if (e[i] > e[dom]) dom = i;
+  return {
+    n: chrCount++, e, dom, pc,
+    total: Math.min(1, (e[0] + e[1] + e[2] + e[3]) / 2),
+    chroma: loud ? chroma.map(v => v / cmax) : new Array(12).fill(0)
+  };
+}
+
+function chrGlyph(c, prevTotal, x, y, size) {
+  let ch, col;
+  if (chrSymbols === 'ascii') {
+    const d = c.total - prevTotal;
+    ch = c.total < 0.03 ? '-' : d > 0.04 ? '/' : d < -0.04 ? '\\' : c.total > 0.75 ? '^' : c.total > 0.4 ? '~' : '_';
+    col = c.total > 0.5 ? '#1a4fd6' : '#222222';
+  } else if (c.total < 0.03) {
+    ch = '·'; col = '#bbbbbb';
+  } else if (chrSymbols === 'dna') {
+    ch = CHR_BANDS[c.dom].base; col = CHR_BANDS[c.dom].col;
+  } else {
+    const sc = chrScale(chrKey);
+    ch = c.pc >= 0 ? CHR_NOTES[c.pc] : '·';
+    col = !sc || c.pc < 0 ? '#222222' : c.pc === chrKey.tonic ? '#d61a1a' : sc.includes(c.pc) ? '#1a4fd6' : '#999999';
+  }
+  ctx.font = size + 'px "Share Tech Mono", monospace';
+  ctx.fillStyle = col;
+  ctx.fillText(ch, x, y);
+}
+
+function chrDrawStillRow(r, top, traceH) {
+  const mid = top + traceH / 2;
+  CHR_BANDS.forEach((b, k) => {
+    const td = chrHist[Math.min(chrHist.length - 1, r * 4 + k)];
+    if (!td) return;
+    ctx.strokeStyle = b.col;
+    ctx.globalAlpha = k === 0 ? 0.75 : 1;
+    ctx.lineWidth = k === 2 ? 1.3 : 1.7;
+    ctx.beginPath();
+    const n = td.length, step = n / W;
+    for (let x = 0; x <= W; x += 2) {
+      let v = (td[Math.min(n - 1, Math.floor(x * step))] - 128) / 128;
+      if (Math.abs(v) < 0.015) v = 0;
+      const y = mid - Math.max(-1, Math.min(1, v * 2.2)) * traceH * 0.48;
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+
+function chrDrawStillLetters(s, y, rowH) {
+  const size = Math.round(Math.max(12, Math.min(24, rowH * 0.2)));
+  if (chrSymbols === 'notes') {
+    const sc = chrScale(chrKey), slot = W / 12;
+    for (let i = 0; i < 12; i++) {
+      const e = s.chroma[i], inKey = !!(sc && sc.includes(i));
+      ctx.font = Math.round(size * (0.85 + e * 0.6)) + 'px "Share Tech Mono", monospace';
+      ctx.fillStyle = chrKey && i === chrKey.tonic ? '#d61a1a' : inKey ? '#1a4fd6' : '#999999';
+      ctx.globalAlpha = 0.35 + 0.65 * Math.max(e, inKey ? 0.5 : 0);
+      ctx.fillText(CHR_NOTES[i], slot * i + slot / 2, y - e * rowH * 0.05);
+      ctx.globalAlpha = 1;
+    }
+    return;
+  }
+  const slots = Math.max(8, Math.floor(W / 26)), slot = W / slots;
+  let prev = 0;
+  for (let i = 0; i < slots; i++) {
+    const hz = 40 * Math.pow(12000 / 40, (i + 0.5) / slots);
+    const k = hz < 250 ? 0 : hz < 1000 ? 1 : hz < 4000 ? 2 : 3;
+    const e = Math.max(0, freqData[chrBin(hz)] / 255 - 0.05) / 0.95;
+    chrGlyph({ total: e, dom: k, pc: -1 }, prev, slot * i + slot / 2, y, size);
+    prev = e;
+  }
+}
+
+function chrRowRange(r, cols) {
+  const end = chrStrip.length - r * cols;
+  return { s0: Math.max(0, end - cols), end };
+}
+
+function chrDrawStripRow(r, cols, top, traceH) {
+  const { s0, end } = chrRowRange(r, cols);
+  if (end <= s0) return;
+  CHR_BANDS.forEach((b, k) => {
+    ctx.strokeStyle = b.col;
+    ctx.lineWidth = k === 2 ? 1.4 : 1.8;
+    ctx.beginPath();
+    let first = true, px = 0, py = 0;
+    for (let i = s0; i < end; i++) {
+      const x = W - (end - 1 - i) * CHR_COL;
+      const y = top + traceH - 2 - Math.min(1, chrStrip[i].e[k] * 1.1) * (traceH - 6);
+      if (first) { ctx.moveTo(x, y); first = false; }
+      else ctx.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2);
+      px = x; py = y;
+    }
+    if (!first) ctx.lineTo(px, py);
+    ctx.stroke();
+  });
+}
+
+function chrDrawStripLetters(r, cols, y, rowH) {
+  const { s0, end } = chrRowRange(r, cols);
+  if (end <= s0) return;
+  const size = Math.round(Math.max(12, Math.min(22, rowH * 0.2)));
+  let i = s0, prev = 0;
+  while (i < end) {
+    const g = Math.floor(chrStrip[i].n / CHR_GROUP);
+    let j = i, best = i;
+    while (j < end && Math.floor(chrStrip[j].n / CHR_GROUP) === g) {
+      if (chrStrip[j].total > chrStrip[best].total) best = j;
+      j++;
+    }
+    const x = W - (end - 1 - (i + j - 1) / 2) * CHR_COL;
+    chrGlyph(chrStrip[best], prev, x, y, size);
+    prev = chrStrip[best].total;
+    i = j;
+  }
+}
+
+function chromatogram() {
+  if (!freqData || !timeData) return;
+  const s = chrSample();
+  const rows = Math.max(2, Math.floor(H / 140));
+  const cols = Math.ceil(W / CHR_COL) + 1;
+  chrStrip.push(s);
+  if (chrStrip.length > rows * cols) chrStrip.splice(0, chrStrip.length - rows * cols);
+  chrHist.unshift(Uint8Array.from(timeData));
+  if (chrHist.length > rows * 4 + 4) chrHist.length = rows * 4 + 4;
+
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const rowH = H / rows;
+  const toolsH = Math.min(rowH * 0.4, document.getElementById('chrTools').offsetHeight + 12);
+  for (let r = 0; r < rows; r++) {
+    const top = r * rowH + (r === 0 ? toolsH : 6);
+    const traceH = rowH * 0.66 - (r === 0 ? toolsH - 6 : 0);
+    const baseY = top + traceH + 4;
+    const letterY = baseY + (r * rowH + rowH - baseY) / 2;
+    if (chrScroll) chrDrawStripRow(r, cols, top, traceH); else chrDrawStillRow(r, top, traceH);
+    ctx.strokeStyle = '#000000'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(0, baseY); ctx.lineTo(W, baseY); ctx.stroke();
+    if (chrScroll) chrDrawStripLetters(r, cols, letterY, rowH); else chrDrawStillLetters(s, letterY, rowH);
+  }
+
+  if (frameCount % 15 === 0) {
+    document.getElementById('chrKey').textContent = chrKey
+      ? 'KEY ' + CHR_NOTES[chrKey.tonic] + ' ' + chrKey.q.toUpperCase()
+      : 'KEY LISTENING';
+  }
 }
 </script>
 <script src="spectral-engine-v2-config.js"></script>
